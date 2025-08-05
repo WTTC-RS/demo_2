@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>GA Crawler with Matter.js</title>
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; }
+    canvas { display: block; background: #f0f0f0; }
+    #info { position: absolute; top: 10px; left: 10px; font-family: sans-serif; z-index: 10; }
+    #history { position: absolute; top: 90px; left: 10px; font-family: sans-serif; font-size: 14px; max-height: 300px; overflow-y: auto; background: #fff; padding: 5px; border: 1px solid #ccc; }
+    #controls { position: absolute; top: 40px; left: 10px; font-family: sans-serif; background: #fff; padding: 5px; border: 1px solid #ccc; }
+    label { display: block; margin-top: 5px; }
+  </style>
+</head>
+<body>
+  <div id="info">
+    Generation: <span id="gen">0</span> |
+    Individual: <span id="ind">0</span> |
+    Distance: <span id="dist">0</span> |
+    Avg Distance: <span id="avg">0</span>
+  </div>
+  <div id="controls">
+    <label>Number of Individuals: <input id="numInput" type="number" value="16" min="1" /></label>
+    <label>Structure Length (Number of Circles): <input id="lengthInput" type="number" value="4" min="1" /></label>
+    <label>Simulation Duration (ms): <input id="timeInput" type="number" value="2000" min="100" step="100" /></label>
+    <button id="startBtn">Start</button>
+  </div>
+  <div id="history"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+  <script>
+    const { Engine, Render, Runner, World, Bodies, Body, Constraint } = Matter;
+
+    let NUM_INDIVIDUALS = 16;
+    let SIM_DURATION = 2000;
+    let STRUCTURE_LENGTH = 4;
+    const BASE_RADIUS = 20;
+    const BASE_LENGTH = 40;
+
+    let generation = 0;
+    let currentIndividual = 0;
+    let population = [];
+    let distances = [];
+
+    const engine = Engine.create();
+    const world = engine.world;
+
+    const render = Render.create({
+      element: document.body,
+      engine: engine,
+      options: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        wireframes: false,
+        background: '#fff',
+        hasBounds: true
+      }
+    });
+    Render.run(render);
+    const runner = Runner.create();
+    Runner.run(runner, engine);
+
+    for (let i = 0; i < 200; i++) {
+      const height = 20 + Math.random() * 60;
+      const x = i * 80;
+      const platform = Bodies.rectangle(x, window.innerHeight - 50 - height / 2, 80, height, {
+        isStatic: true,
+        render: { fillStyle: '#ccc' }
+      });
+      World.add(world, platform);
+    }
+
+    const backWall = Bodies.rectangle(-100, window.innerHeight / 2, 50, window.innerHeight, {
+      isStatic: true,
+      render: { fillStyle: '#888' }
+    });
+    World.add(world, backWall);
+
+    class SegmentGene {
+      constructor(speed) {
+        this.speed = speed;
+      }
+    }
+
+    class Individual {
+      constructor(genes) {
+        this.genes = genes;
+        this.parts = [];
+        this.constraints = [];
+      }
+
+      createBody(x, y) {
+        this.parts = [];
+        this.constraints = [];
+
+        for (let i = 0; i <= this.genes.length; i++) {
+          const circle = Bodies.circle(x + i * BASE_LENGTH, y, BASE_RADIUS, { friction: 0.9 });
+          this.parts.push(circle);
+        }
+
+        for (let i = 0; i < this.genes.length; i++) {
+          const con = Constraint.create({
+            bodyA: this.parts[i],
+            bodyB: this.parts[i + 1],
+            length: BASE_LENGTH,
+            stiffness: 1
+          });
+          this.constraints.push(con);
+        }
+
+        World.add(world, [...this.parts, ...this.constraints]);
+      }
+
+      removeBody() {
+        World.remove(world, [...this.parts, ...this.constraints]);
+      }
+
+      updateMotors(dt) {
+        for (let i = 0; i < this.genes.length; i++) {
+          const b = this.parts[i + 1];
+          const speed = this.genes[i].speed;
+          Body.setAngularVelocity(b, speed);
+        }
+      }
+
+      getDistance() {
+        return this.parts[this.parts.length - 1].position.x;
+      }
+
+      getCenter() {
+        const last = this.parts[this.parts.length - 1];
+        return { x: last.position.x, y: last.position.y };
+      }
+    }
+
+    function randomGene() {
+      const speed = (Math.random() * 2 - 1) * 2;
+      return new SegmentGene(speed);
+    }
+
+    function createRandomIndividual() {
+      const genes = [];
+      for (let i = 0; i < STRUCTURE_LENGTH; i++) {
+        genes.push(randomGene());
+      }
+      return new Individual(genes);
+    }
+
+    function evaluateIndividual(ind, callback) {
+      const startX = 150;
+      const startY = window.innerHeight - 100;
+
+      ind.createBody(startX, startY);
+
+      let start = Date.now();
+
+      const interval = setInterval(() => {
+        const elapsed = Date.now() - start;
+        document.getElementById("dist").textContent = (ind.getDistance() - startX).toFixed(1);
+
+        ind.updateMotors(16);
+
+        const center = ind.getCenter();
+        render.bounds.min.x = center.x - window.innerWidth / 2;
+        render.bounds.max.x = center.x + window.innerWidth / 2;
+        render.bounds.min.y = 0;
+        render.bounds.max.y = window.innerHeight;
+
+        render.options.width = window.innerWidth;
+        render.options.height = window.innerHeight;
+
+        if (elapsed > SIM_DURATION) {
+          clearInterval(interval);
+          const dist = ind.getDistance() - startX;
+          ind.removeBody();
+          callback(dist);
+        }
+      }, 16);
+    }
+
+    function nextGeneration() {
+      const avg = distances.reduce((a, b) => a + b, 0) / distances.length;
+      console.log(`Generation ${generation} average distance: ${avg.toFixed(2)}`);
+      document.getElementById("avg").textContent = avg.toFixed(1);
+
+      const hist = document.getElementById("history");
+      const entry = document.createElement("div");
+      entry.textContent = `Gen ${generation}: Avg = ${avg.toFixed(1)}`;
+      hist.appendChild(entry);
+
+      generation++;
+      document.getElementById("gen").textContent = generation;
+
+      const ranked = population
+        .map((ind, i) => ({ ind, dist: distances[i] }))
+        .sort((a, b) => b.dist - a.dist)
+        .slice(0, 4);
+
+      const newPop = [];
+      while (newPop.length < NUM_INDIVIDUALS) {
+        const p1 = ranked[Math.floor(Math.random() * 4)].ind;
+        const p2 = ranked[Math.floor(Math.random() * 4)].ind;
+        const childGenes = [];
+        for (let i = 0; i < STRUCTURE_LENGTH; i++) {
+          const gene = Math.random() < 0.5 ? p1.genes[i] : p2.genes[i];
+          const mutated = Math.random() < 0.1;
+          childGenes.push(mutated ? randomGene() : new SegmentGene(gene.speed));
+        }
+        newPop.push(new Individual(childGenes));
+      }
+
+      population = newPop;
+      currentIndividual = 0;
+      distances = [];
+      runEvaluationLoop();
+    }
+
+    function runEvaluationLoop() {
+      if (currentIndividual >= NUM_INDIVIDUALS) {
+        nextGeneration();
+        return;
+      }
+
+      document.getElementById("ind").textContent = currentIndividual;
+      evaluateIndividual(population[currentIndividual], (dist) => {
+        distances.push(dist);
+        currentIndividual++;
+        runEvaluationLoop();
+      });
+    }
+
+    document.getElementById("startBtn").addEventListener("click", () => {
+      NUM_INDIVIDUALS = parseInt(document.getElementById("numInput").value);
+      SIM_DURATION = parseInt(document.getElementById("timeInput").value);
+      STRUCTURE_LENGTH = parseInt(document.getElementById("lengthInput").value);
+      generation = 0;
+      currentIndividual = 0;
+      population = Array.from({ length: NUM_INDIVIDUALS }, createRandomIndividual);
+      distances = [];
+      document.getElementById("history").innerHTML = "";
+      document.getElementById("gen").textContent = "0";
+      runEvaluationLoop();
+    });
+  </script>
+</body>
+</html>
